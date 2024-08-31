@@ -13,7 +13,7 @@ jobs:
       - uses: docker/metadata-action@v3
         id: meta
         with:
-          images: ghcr.io/mii443/signaling-server
+          images: ghcr.io/mii443/rs-easy-p2p
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
