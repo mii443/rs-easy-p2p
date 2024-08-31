@@ -131,6 +131,10 @@ impl P2P {
         self.receive_data.lock().await.recv().await
     }
 
+    pub async fn receive_text(&mut self) -> Result<String> {
+        String::from_utf8(self.receive_data.lock().await.recv().await.context("Failed to receive data")?.to_vec()).context("Failed to convert")
+    }
+
     pub async fn set_answer(&mut self, answer: &str, compress: bool) -> Result<()> {
         self.peer_connection.lock().await.set_remote_description(Self::decode_description(answer, compress)?).await.context("Failed to set answer")
     }
