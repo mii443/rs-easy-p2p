@@ -42,5 +42,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=planner
+            type=gha,scope=builder
+            type=gha,scope=runtime
+          cache-to: |
+            type=gha,mode=max,scope=planner
+            type=gha,mode=max,scope=builder
+            type=gha,mode=max,scope=runtime
+          target: runtime
