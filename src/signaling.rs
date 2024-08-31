@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use easyp2p::p2p::SessionDescription;
-use futures::stream::{Stream, StreamExt};
+use futures::stream::Stream;
 use rand::Rng;
 use tower_http::cors::CorsLayer;
 use std::{collections::HashMap, sync::Arc, time::Duration};
