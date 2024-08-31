@@ -8,7 +8,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc::{Receiver, Sender}, Mutex};
-use webrtc::{api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder}, data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel}, ice_transport::{ice_candidate::RTCIceCandidate, ice_gatherer::RTCIceGatherer, ice_server::RTCIceServer}, interceptor::registry::Registry, peer_connection::{configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
+use webrtc::{api::{interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder}, data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel}, ice_transport::{ice_candidate::RTCIceCandidate, ice_gatherer::RTCIceGatherer, ice_server::RTCIceServer}, interceptor::registry::Registry, peer_connection::{self, configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState, sdp::session_description::RTCSessionDescription, RTCPeerConnection}};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionDescription {
@@ -22,11 +22,11 @@ pub struct ConnectionCode {
 
 pub struct P2P {
     peer_connection: Arc<Mutex<RTCPeerConnection>>,
-    send_data: Arc<Mutex<Sender<SendData>>>,
+    send_data_tx: Arc<Mutex<Sender<SendData>>>,
     send_data_rx: Arc<Mutex<Receiver<SendData>>>,
-    pub receive_data: Arc<Mutex<Receiver<Bytes>>>,
-    receive_data_tx: Arc<Mutex<Sender<Bytes>>>,
-    done_rx: Receiver<()>,
+    pub receive_data_rx: Arc<Mutex<Receiver<Receive>>>,
+    receive_data_tx: Arc<Mutex<Sender<Receive>>>,
+    done_tx: Arc<Mutex<Sender<()>>>,
     on_open: Receiver<()>,
     on_open_tx: Arc<Mutex<Sender<()>>>
 }
@@ -34,6 +34,11 @@ pub struct P2P {
 enum SendData {
     Bytes(Bytes),
     String(String)
+}
+
+pub enum Receive {
+    Data(Bytes),
+    Close
 }
 
 impl P2P {
@@ -121,19 +126,22 @@ impl P2P {
     }
 
     pub async fn send(&mut self, data: Bytes) -> Result<()> {
-        self.send_data.lock().await.send(SendData::Bytes(data)).await.context("Failed to send data")
+        self.send_data_tx.lock().await.send(SendData::Bytes(data)).await.context("Failed to send data")
     }
 
     pub async fn send_text(&mut self, data: &str) -> Result<()> {
-        self.send_data.lock().await.send(SendData::String(data.to_string())).await.context("Failed to send data")
+        self.send_data_tx.lock().await.send(SendData::String(data.to_string())).await.context("Failed to send data")
     }
 
-    pub async fn receive(&mut self) -> Option<Bytes> {
-        self.receive_data.lock().await.recv().await
+    pub async fn receive(&mut self) -> Option<Receive> {
+        self.receive_data_rx.lock().await.recv().await
     }
 
     pub async fn receive_text(&mut self) -> Result<String> {
-        String::from_utf8(self.receive_data.lock().await.recv().await.context("Failed to receive data")?.to_vec()).context("Failed to convert")
+        match self.receive().await.context("Failed to receive data")? {
+            Receive::Data(data) => String::from_utf8(data.to_vec()).context("Failed to convert"),
+            Receive::Close => Err(anyhow!("Session closed"))
+        }
     }
 
     pub async fn set_answer(&mut self, answer: &str, compress: bool) -> Result<()> {
@@ -148,20 +156,30 @@ impl P2P {
         let receive_data_tx = self.receive_data_tx.clone();
         let on_open_tx = self.on_open_tx.clone();
         let send_data_rx = self.send_data_rx.clone();
+        let done_tx = self.done_tx.clone();
         peer_connection
             .on_data_channel(Box::new(move |d: Arc<RTCDataChannel>| {
                 let receive_data_tx = receive_data_tx.clone();
                 let on_open_tx = on_open_tx.clone();
                 let send_data_rx = send_data_rx.clone();
+                let done_tx = done_tx.clone();
 
                 Box::pin(async move {
                     let d2 = Arc::clone(&d);
+
+                    d.on_close(Box::new(move || {
+                        let done_tx = done_tx.clone();
+
+                        Box::pin(async move {
+                            done_tx.lock().await.send(()).await.unwrap();
+                        })
+                    }));
 
                     d.on_message(Box::new(move |msg: DataChannelMessage| {
                         let receive_data_tx = receive_data_tx.clone();
             
                         Box::pin(async move {
-                            receive_data_tx.lock().await.send(msg.data).await.unwrap();
+                            receive_data_tx.lock().await.send(Receive::Data(msg.data)).await.unwrap();
                         })
                     }));
 
@@ -219,7 +237,16 @@ impl P2P {
             let receive_data_tx = receive_data_tx.clone();
 
             Box::pin(async move {
-                receive_data_tx.lock().await.send(msg.data).await.unwrap();
+                receive_data_tx.lock().await.send(Receive::Data(msg.data)).await.unwrap();
+            })
+        }));
+
+        let done_tx = self.done_tx.clone();
+        data_channel.on_close(Box::new(move || {
+            let done_tx = done_tx.clone();
+
+            Box::pin(async move {
+                done_tx.lock().await.send(()).await.unwrap();
             })
         }));
 
@@ -314,28 +341,50 @@ impl P2P {
 
         let peer_connection = Arc::new(Mutex::new(api.new_peer_connection(config.rtc_configuration).await?));
 
-        let (done_tx, done_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        peer_connection.lock().await.on_peer_connection_state_change(Box::new(move |s: RTCPeerConnectionState| {
-            if s == RTCPeerConnectionState::Failed || s == RTCPeerConnectionState::Disconnected {
-                let _ = done_tx.try_send(());
+        let done_tx = Arc::new(Mutex::new(done_tx));
+        peer_connection.lock().await.on_peer_connection_state_change(Box::new({
+            let done_tx = done_tx.clone();
+            move |s: RTCPeerConnectionState| {
+                let done_tx = done_tx.clone();
+                Box::pin(async move {
+                    if s == RTCPeerConnectionState::Failed || s == RTCPeerConnectionState::Disconnected || s == RTCPeerConnectionState::Closed {
+                        let _ = done_tx.lock().await.try_send(());
+                    }
+                })
             }
-
-            Box::pin(async {})
         }));
 
         let (send_data_tx, send_data_rx) = tokio::sync::mpsc::channel::<SendData>(128);
         let (on_open_tx, on_open_rx) = tokio::sync::mpsc::channel::<()>(1);
-        let (receive_data_tx, receive_data_rx) = tokio::sync::mpsc::channel::<Bytes>(128);
+        let (receive_data_tx, receive_data_rx) = tokio::sync::mpsc::channel::<Receive>(128);
+
+        let send_data_tx = Arc::new(Mutex::new(send_data_tx));
+        let send_data_rx = Arc::new(Mutex::new(send_data_rx));
+        let receive_data_rx =  Arc::new(Mutex::new(receive_data_rx));
+        let receive_data_tx = Arc::new(Mutex::new(receive_data_tx)); 
+
+        tokio::spawn({
+            let peer_connection = peer_connection.clone();
+            let receive_data_tx = receive_data_tx.clone();
+            async move {
+                if let Some(()) = done_rx.recv().await {
+                    peer_connection.lock().await.close().await.unwrap();
+                    receive_data_tx.lock().await.send(Receive::Close).await.unwrap();
+                    receive_data_tx.lock().await.closed().await;
+                }
+            }
+        });
 
         Ok(
             Self {
                 peer_connection,
-                send_data: Arc::new(Mutex::new(send_data_tx)),
-                send_data_rx: Arc::new(Mutex::new(send_data_rx)),
-                receive_data: Arc::new(Mutex::new(receive_data_rx)),
-                receive_data_tx: Arc::new(Mutex::new(receive_data_tx)),
-                done_rx,
+                send_data_tx,
+                send_data_rx,
+                receive_data_rx,
+                receive_data_tx,
+                done_tx,
                 on_open: on_open_rx,
                 on_open_tx: Arc::new(Mutex::new(on_open_tx))
             }

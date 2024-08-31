@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use easyp2p::p2p::P2P;
+use easyp2p::p2p::{Receive, P2P};
 use anyhow::Result;
 
 fn read_line() -> String {
@@ -50,20 +50,30 @@ async fn client_b(code: &str) -> Result<()> {
 }
 
 async fn chat(mut p2p: P2P) -> Result<()> {
-    tokio::spawn({
-        let receive = p2p.receive_data.clone();
+    let receive_thread = tokio::spawn({
+        let receive = p2p.receive_data_rx.clone();
 
         async move {
             let mut receive = receive.lock().await;
-            while let Some(data) = receive.recv().await {
+            while let Some(Receive::Data(data)) = receive.recv().await {
                 print!("Received: {}", String::from_utf8(data.to_vec()).unwrap());
                 std::io::stdout().flush().unwrap();
             }
+            println!("P2P Closed!");
         }
     });
 
-    loop {
-        let line = read_line();
-        p2p.send_text(&format!("{line}\n")).await?;
+    let send_thread = tokio::spawn(async move {
+        loop {
+            let line = tokio::task::spawn_blocking(|| read_line()).await.unwrap();
+            p2p.send_text(&format!("{line}\n")).await.unwrap();
+        }
+    });
+
+    tokio::select! {
+        _ = receive_thread => {},
+        _ = send_thread => {}
     }
+
+    Ok(())
 }
