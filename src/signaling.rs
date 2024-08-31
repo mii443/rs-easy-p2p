@@ -36,10 +36,15 @@ fn app() -> Router {
     });
     
     Router::new()
+        .route("/", get(index))
         .route("/register", post(register))
         .route("/session/:connection_code", get(get_session).post(send_session))
         .layer(CorsLayer::permissive())
         .with_state(app_state)
+}
+
+async fn index() -> &'static str {
+    "WebRTC Signaling server."
 }
 
 fn generate_connection_code() -> String {
