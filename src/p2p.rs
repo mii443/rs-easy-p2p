@@ -99,7 +99,6 @@ impl P2P {
                     let data = String::from_utf8_lossy(&chunk);
 
                     for line in data.lines() {
-                        println!("{line}");
                         if line.starts_with("data:") {
                             let value = line.trim_start_matches("data:").trim();
                             if connection_code_received {
