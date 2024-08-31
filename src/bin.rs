@@ -56,7 +56,7 @@ async fn chat(mut p2p: P2P) -> Result<()> {
         async move {
             let mut receive = receive.lock().await;
             while let Some(data) = receive.recv().await {
-                print!("Received: {}\n", String::from_utf8(data.to_vec()).unwrap());
+                print!("Received: {}", String::from_utf8(data.to_vec()).unwrap());
                 std::io::stdout().flush().unwrap();
             }
         }
