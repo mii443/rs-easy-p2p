@@ -26,5 +26,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/mii443/rs-easy-p2p/signaling-server:${{ version }}
+            ghcr.io/mii443/rs-easy-p2p/signaling-server:{{version}}
             ghcr.io/mii443/rs-easy-p2p/signaling-server:latest
