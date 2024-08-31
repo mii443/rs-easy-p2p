@@ -43,7 +43,7 @@ fn app() -> Router {
 }
 
 fn generate_connection_code() -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    const CHARSET: &[u8] = b"ABCDEFGHJKLMNPRTUVWXYZ234678";
     const CODE_LEN: usize = 6;
     let mut rng = rand::thread_rng();
     
