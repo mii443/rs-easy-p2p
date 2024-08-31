@@ -62,7 +62,8 @@ async fn chat(mut p2p: P2P) -> Result<()> {
             println!("P2P Closed!");
         }
     });
-
+    
+    let peer_connection = p2p.peer_connection.clone();
     let send_thread = tokio::spawn(async move {
         loop {
             let line = tokio::task::spawn_blocking(|| read_line()).await.unwrap();
@@ -72,8 +73,11 @@ async fn chat(mut p2p: P2P) -> Result<()> {
 
     tokio::select! {
         _ = receive_thread => {},
-        _ = send_thread => {}
+        _ = send_thread => {},
+        _ = tokio::signal::ctrl_c() => {}
     }
 
-    Ok(())
+    peer_connection.lock().await.close().await.unwrap();
+
+    std::process::exit(0);
 }

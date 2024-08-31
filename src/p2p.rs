@@ -21,7 +21,7 @@ pub struct ConnectionCode {
 }
 
 pub struct P2P {
-    peer_connection: Arc<Mutex<RTCPeerConnection>>,
+    pub peer_connection: Arc<Mutex<RTCPeerConnection>>,
     send_data_tx: Arc<Mutex<Sender<SendData>>>,
     send_data_rx: Arc<Mutex<Receiver<SendData>>>,
     pub receive_data_rx: Arc<Mutex<Receiver<Receive>>>,
