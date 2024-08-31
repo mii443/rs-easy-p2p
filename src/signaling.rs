@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use easyp2p::p2p::SessionDescription;
-use futures::stream::Stream;
+use futures::stream::{Stream, StreamExt};
 use rand::Rng;
 use tower_http::cors::CorsLayer;
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -19,7 +19,6 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-
     let app = app();
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
@@ -75,6 +74,7 @@ async fn register(
     Json(payload): Json<SessionDescription>,
 ) -> Sse<impl Stream<Item = Result<Event, axum::Error>>> {
     let connection_code = get_unique_connection_code(&state.sessions).await;
+    println!("Connected: {connection_code}");
     let (tx, rx) = broadcast::channel(100);
 
     state
@@ -88,20 +88,34 @@ async fn register(
         .await
         .insert(connection_code.clone(), tx);
 
-    let stream = async_stream::stream! {
-        yield Ok(Event::default().event("connection_code").data(connection_code.clone()));
-        let mut receiver = rx;
-        if let Ok(msg) = receiver.recv().await {
-            yield Ok(Event::default().event("peer_description").data(msg));
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                let mut sessions = state.sessions.lock().await;
-                let mut broadcasters = state.broadcasters.lock().await;
-                sessions.remove(&connection_code);
-                broadcasters.remove(&connection_code);
-            });
+    let stream = {
+        let connection_code = connection_code.clone();
+        let state = state.clone();
+        async_stream::stream! {
+            yield Ok(Event::default().event("connection_code").data(connection_code.clone()));
+            let mut receiver = rx;
+            if let Ok(msg) = receiver.recv().await {
+                yield Ok(Event::default().event("peer_description").data(msg));
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    println!("End: {connection_code}");
+                    let mut sessions = state.sessions.lock().await;
+                    let mut broadcasters = state.broadcasters.lock().await;
+                    sessions.remove(&connection_code);
+                    broadcasters.remove(&connection_code);
+                });
+            }
         }
     };
+
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        println!("End(timeout): {connection_code}");
+        let mut sessions = state.sessions.lock().await;
+        let mut broadcasters = state.broadcasters.lock().await;
+        sessions.remove(&connection_code);
+        broadcasters.remove(&connection_code);
+    });
 
     Sse::new(stream)
 }
@@ -110,6 +124,7 @@ async fn get_session(
     Path(connection_code): Path<String>,
     State(state): State<Arc<AppState>>,
 ) -> Json<SessionDescription> {
+    println!("Get connection: {connection_code}");
     let sessions = state.sessions.lock().await;
     let session_description = sessions
         .get(&connection_code)
@@ -123,6 +138,7 @@ async fn send_session(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SessionDescription>,
 ) {
+    println!("Send session: {connection_code} {}", payload.session_description);
     if let Some(tx) = state.broadcasters.lock().await.get(&connection_code) {
         let _ = tx.send(payload.session_description);
     }
